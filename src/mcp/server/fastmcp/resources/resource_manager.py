@@ -87,9 +87,16 @@ class ResourceManager:
         raise ValueError(f"Unknown resource: {uri}")
 
     def list_resources(self) -> list[Resource]:
-        """List all registered resources."""
-        logger.debug("Listing resources", extra={"count": len(self._resources)})
-        return list(self._resources.values())
+        """List all registered resources (excluding tool/prompt adapters)."""
+        all_resources = list(self._resources.values())
+        # Filter out tool and prompt adapters to maintain API compatibility
+        filtered_resources = [
+            r for r in all_resources if not (str(r.uri).startswith("tool://") or str(r.uri).startswith("prompt://"))
+        ]
+        logger.debug(
+            "Listing resources", extra={"total_count": len(all_resources), "filtered_count": len(filtered_resources)}
+        )
+        return filtered_resources
 
     def list_templates(self) -> list[ResourceTemplate]:
         """List all registered templates."""
