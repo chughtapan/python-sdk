@@ -14,7 +14,6 @@ import mcp.types as types
 from mcp.client.session import (
     ClientSession,
     ElicitationFnT,
-    ListRootsFnT,
     LoggingFnT,
     MessageHandlerFnT,
     SamplingFnT,
@@ -55,7 +54,6 @@ async def create_connected_server_and_client_session(
     server: Server[Any],
     read_timeout_seconds: timedelta | None = None,
     sampling_callback: SamplingFnT | None = None,
-    list_roots_callback: ListRootsFnT | None = None,
     logging_callback: LoggingFnT | None = None,
     message_handler: MessageHandlerFnT | None = None,
     client_info: types.Implementation | None = None,
@@ -87,7 +85,6 @@ async def create_connected_server_and_client_session(
                     write_stream=client_write,
                     read_timeout_seconds=read_timeout_seconds,
                     sampling_callback=sampling_callback,
-                    list_roots_callback=list_roots_callback,
                     logging_callback=logging_callback,
                     message_handler=message_handler,
                     client_info=client_info,

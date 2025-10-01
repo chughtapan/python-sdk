@@ -111,12 +111,6 @@ class ServerSession(
         client_caps = self._client_params.capabilities
 
         # Check each specified capability in the passed in capability object
-        if capability.roots is not None:
-            if client_caps.roots is None:
-                return False
-            if capability.roots.listChanged and not client_caps.roots.listChanged:
-                return False
-
         if capability.sampling is not None:
             if client_caps.sampling is None:
                 return False
@@ -242,13 +236,6 @@ class ServerSession(
             metadata=ServerMessageMetadata(
                 related_request_id=related_request_id,
             ),
-        )
-
-    async def list_roots(self) -> types.ListRootsResult:
-        """Send a roots/list request."""
-        return await self.send_request(
-            types.ServerRequest(types.ListRootsRequest()),
-            types.ListRootsResult,
         )
 
     async def elicit(

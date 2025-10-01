@@ -21,6 +21,7 @@ from starlette.responses import Response
 from starlette.routing import Mount, Route
 from starlette.types import Receive, Scope, Send
 
+import mcp.types as types
 from mcp.server.auth.middleware.auth_context import AuthContextMiddleware
 from mcp.server.auth.middleware.bearer_auth import BearerAuthBackend, RequireAuthMiddleware
 from mcp.server.auth.provider import OAuthAuthorizationServerProvider, ProviderTokenVerifier, TokenVerifier
@@ -177,6 +178,7 @@ class FastMCP(Generic[LifespanResultT]):
         self._tool_manager = ToolManager(tools=tools, warn_on_duplicate_tools=self.settings.warn_on_duplicate_tools)
         self._resource_manager = ResourceManager(warn_on_duplicate_resources=self.settings.warn_on_duplicate_resources)
         self._prompt_manager = PromptManager(warn_on_duplicate_prompts=self.settings.warn_on_duplicate_prompts)
+        self._roots: list[types.Root] = []
         # Validate auth configuration
         if self.settings.auth is not None:
             if auth_server_provider and token_verifier:
@@ -265,6 +267,8 @@ class FastMCP(Generic[LifespanResultT]):
         self._mcp_server.list_prompts()(self.list_prompts)
         self._mcp_server.get_prompt()(self.get_prompt)
         self._mcp_server.list_resource_templates()(self.list_resource_templates)
+        self._mcp_server.set_roots()(self.set_roots)
+        self._mcp_server.list_roots()(self.list_roots)
 
     async def list_tools(self) -> list[MCPTool]:
         """List all available tools."""
@@ -339,6 +343,19 @@ class FastMCP(Generic[LifespanResultT]):
         except Exception as e:
             logger.exception(f"Error reading resource {uri}")
             raise ResourceError(str(e))
+
+    async def set_roots(self, roots: list[types.Root]) -> None:
+        """Handle set_roots request from the client."""
+        self._roots = roots
+
+    async def list_roots(self) -> list[types.Root]:
+        """Handle list_roots request from the client."""
+        return self._roots
+
+    @property
+    def roots(self) -> list[types.Root]:
+        """Get the currently set roots."""
+        return self._roots
 
     def add_tool(
         self,

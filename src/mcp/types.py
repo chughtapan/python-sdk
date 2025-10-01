@@ -223,8 +223,6 @@ class Implementation(BaseMetadata):
 class RootsCapability(BaseModel):
     """Capability for root operations."""
 
-    listChanged: bool | None = None
-    """Whether the client supports notifications for changes to the roots list."""
     model_config = ConfigDict(extra="allow")
 
 
@@ -249,8 +247,6 @@ class ClientCapabilities(BaseModel):
     """Present if the client supports sampling from an LLM."""
     elicitation: ElicitationCapability | None = None
     """Present if the client supports elicitation from the user."""
-    roots: RootsCapability | None = None
-    """Present if the client supports listing roots."""
     model_config = ConfigDict(extra="allow")
 
 
@@ -307,6 +303,8 @@ class ServerCapabilities(BaseModel):
     """Present if the server offers any tools to call."""
     completions: CompletionsCapability | None = None
     """Present if the server offers autocompletion suggestions for prompts and resources."""
+    roots: RootsCapability | None = None
+    """Present if the server supports accepting roots from the client."""
     model_config = ConfigDict(extra="allow")
 
 
@@ -1133,21 +1131,6 @@ class CompleteResult(Result):
     completion: Completion
 
 
-class ListRootsRequest(Request[RequestParams | None, Literal["roots/list"]]):
-    """
-    Sent from the server to request a list of root URIs from the client. Roots allow
-    servers to ask for specific directories or files to operate on. A common example
-    for roots is providing a set of repositories or directories a server should operate
-    on.
-
-    This request is typically used when the server needs to understand the file system
-    structure or access specific locations that the client has permission to read from.
-    """
-
-    method: Literal["roots/list"] = "roots/list"
-    params: RequestParams | None = None
-
-
 class Root(BaseModel):
     """Represents a root directory or file that the server can operate on."""
 
@@ -1171,30 +1154,43 @@ class Root(BaseModel):
     model_config = ConfigDict(extra="allow")
 
 
+class SetRootsRequestParams(RequestParams):
+    """Parameters for setting the root directories or files."""
+
+    roots: list[Root]
+    """The new list of roots to set. This replaces any existing roots."""
+    model_config = ConfigDict(extra="allow")
+
+
+class SetRootsRequest(Request[SetRootsRequestParams, Literal["roots/set"]]):
+    """
+    Sent from the client to the server to set the root directories or files that the server can operate on.
+    This replaces the entire list of roots with the new set provided.
+    The server responds with EmptyResult to acknowledge the roots have been set.
+    """
+
+    method: Literal["roots/set"] = "roots/set"
+    params: SetRootsRequestParams
+
+
+class ListRootsRequest(Request[RequestParams | None, Literal["roots/list"]]):
+    """
+    Sent from the client to query the list of root URIs currently set on the server.
+    The server responds with the list of roots that were previously set via SetRootsRequest.
+    """
+
+    method: Literal["roots/list"] = "roots/list"
+    params: RequestParams | None = None
+
+
 class ListRootsResult(Result):
     """
-    The client's response to a roots/list request from the server.
-    This result contains an array of Root objects, each representing a root directory
-    or file that the server can operate on.
+    The server's response to a roots/list request from the client.
+    This result contains an array of Root objects representing the root directories
+    or files currently configured on the server.
     """
 
     roots: list[Root]
-
-
-class RootsListChangedNotification(
-    Notification[NotificationParams | None, Literal["notifications/roots/list_changed"]]
-):
-    """
-    A notification from the client to the server, informing it that the list of
-    roots has changed.
-
-    This notification should be sent whenever the client adds, removes, or
-    modifies any root. The server should then request an updated list of roots
-    using the ListRootsRequest.
-    """
-
-    method: Literal["notifications/roots/list_changed"] = "notifications/roots/list_changed"
-    params: NotificationParams | None = None
 
 
 class CancelledNotificationParams(NotificationParams):
@@ -1232,14 +1228,14 @@ class ClientRequest(
         | UnsubscribeRequest
         | CallToolRequest
         | ListToolsRequest
+        | SetRootsRequest
+        | ListRootsRequest
     ]
 ):
     pass
 
 
-class ClientNotification(
-    RootModel[CancelledNotification | ProgressNotification | InitializedNotification | RootsListChangedNotification]
-):
+class ClientNotification(RootModel[CancelledNotification | ProgressNotification | InitializedNotification]):
     pass
 
 
@@ -1281,11 +1277,11 @@ class ElicitResult(Result):
     """
 
 
-class ClientResult(RootModel[EmptyResult | CreateMessageResult | ListRootsResult | ElicitResult]):
+class ClientResult(RootModel[EmptyResult | CreateMessageResult | ElicitResult]):
     pass
 
 
-class ServerRequest(RootModel[PingRequest | CreateMessageRequest | ListRootsRequest | ElicitRequest]):
+class ServerRequest(RootModel[PingRequest | CreateMessageRequest | ElicitRequest]):
     pass
 
 
@@ -1315,6 +1311,7 @@ class ServerResult(
         | ReadResourceResult
         | CallToolResult
         | ListToolsResult
+        | ListRootsResult
     ]
 ):
     pass

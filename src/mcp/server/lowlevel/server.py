@@ -212,6 +212,11 @@ class Server(Generic[LifespanResultT, RequestT]):
         if types.CompleteRequest in self.request_handlers:
             completions_capability = types.CompletionsCapability()
 
+        # Set roots capability if handler exists
+        roots_capability = None
+        if types.SetRootsRequest in self.request_handlers:
+            roots_capability = types.RootsCapability()
+
         return types.ServerCapabilities(
             prompts=prompts_capability,
             resources=resources_capability,
@@ -219,6 +224,7 @@ class Server(Generic[LifespanResultT, RequestT]):
             logging=logging_capability,
             experimental=experimental_capabilities,
             completions=completions_capability,
+            roots=roots_capability,
         )
 
     @property
@@ -349,6 +355,36 @@ class Server(Generic[LifespanResultT, RequestT]):
                 return types.ServerResult(types.EmptyResult())
 
             self.request_handlers[types.SetLevelRequest] = handler
+            return func
+
+        return decorator
+
+    def set_roots(self):
+        """Register a handler for SetRootsRequest."""
+
+        def decorator(func: Callable[[list[types.Root]], Awaitable[None]]):
+            logger.debug("Registering handler for SetRootsRequest")
+
+            async def handler(req: types.SetRootsRequest):
+                await func(req.params.roots)
+                return types.ServerResult(types.EmptyResult())
+
+            self.request_handlers[types.SetRootsRequest] = handler
+            return func
+
+        return decorator
+
+    def list_roots(self):
+        """Register a handler for ListRootsRequest."""
+
+        def decorator(func: Callable[[], Awaitable[list[types.Root]]]):
+            logger.debug("Registering handler for ListRootsRequest")
+
+            async def handler(_: Any):
+                roots = await func()
+                return types.ServerResult(types.ListRootsResult(roots=roots))
+
+            self.request_handlers[types.ListRootsRequest] = handler
             return func
 
         return decorator
