@@ -21,7 +21,7 @@ from starlette.routing import Route
 from mcp import ClientSession, types
 from mcp.client.streamable_http import streamablehttp_client
 from mcp.shared.session import RequestResponder
-from mcp.types import ClientNotification, RootsListChangedNotification
+from mcp.types import ClientNotification, InitializedNotification
 
 
 def create_non_sdk_server_app() -> Starlette:
@@ -142,8 +142,9 @@ async def test_non_compliant_notification_response(non_sdk_server: None, non_sdk
             await session.initialize()
 
             # The test server returns a 204 instead of the expected 202
+            # Send a duplicate initialized notification to test notification handling
             await session.send_notification(
-                ClientNotification(RootsListChangedNotification(method="notifications/roots/list_changed"))
+                ClientNotification(InitializedNotification(method="notifications/initialized"))
             )
 
     if returned_exception:

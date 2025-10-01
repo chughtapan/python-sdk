@@ -34,12 +34,6 @@ class ElicitationFnT(Protocol):
     ) -> types.ElicitResult | types.ErrorData: ...
 
 
-class ListRootsFnT(Protocol):
-    async def __call__(
-        self, context: RequestContext["ClientSession", Any]
-    ) -> types.ListRootsResult | types.ErrorData: ...
-
-
 class LoggingFnT(Protocol):
     async def __call__(
         self,
@@ -80,15 +74,6 @@ async def _default_elicitation_callback(
     )
 
 
-async def _default_list_roots_callback(
-    context: RequestContext["ClientSession", Any],
-) -> types.ListRootsResult | types.ErrorData:
-    return types.ErrorData(
-        code=types.INVALID_REQUEST,
-        message="List roots not supported",
-    )
-
-
 async def _default_logging_callback(
     params: types.LoggingMessageNotificationParams,
 ) -> None:
@@ -114,7 +99,6 @@ class ClientSession(
         read_timeout_seconds: timedelta | None = None,
         sampling_callback: SamplingFnT | None = None,
         elicitation_callback: ElicitationFnT | None = None,
-        list_roots_callback: ListRootsFnT | None = None,
         logging_callback: LoggingFnT | None = None,
         message_handler: MessageHandlerFnT | None = None,
         client_info: types.Implementation | None = None,
@@ -129,7 +113,6 @@ class ClientSession(
         self._client_info = client_info or DEFAULT_CLIENT_INFO
         self._sampling_callback = sampling_callback or _default_sampling_callback
         self._elicitation_callback = elicitation_callback or _default_elicitation_callback
-        self._list_roots_callback = list_roots_callback or _default_list_roots_callback
         self._logging_callback = logging_callback or _default_logging_callback
         self._message_handler = message_handler or _default_message_handler
         self._tool_output_schemas: dict[str, dict[str, Any] | None] = {}
@@ -139,15 +122,6 @@ class ClientSession(
         elicitation = (
             types.ElicitationCapability() if self._elicitation_callback is not _default_elicitation_callback else None
         )
-        roots = (
-            # TODO: Should this be based on whether we
-            # _will_ send notifications, or only whether
-            # they're supported?
-            types.RootsCapability(listChanged=True)
-            if self._list_roots_callback is not _default_list_roots_callback
-            else None
-        )
-
         result = await self.send_request(
             types.ClientRequest(
                 types.InitializeRequest(
@@ -157,7 +131,6 @@ class ClientSession(
                             sampling=sampling,
                             elicitation=elicitation,
                             experimental=None,
-                            roots=roots,
                         ),
                         clientInfo=self._client_info,
                     ),
@@ -381,9 +354,23 @@ class ClientSession(
 
         return result
 
-    async def send_roots_list_changed(self) -> None:
-        """Send a roots/list_changed notification."""
-        await self.send_notification(types.ClientNotification(types.RootsListChangedNotification()))
+    async def set_roots(self, roots: list[types.Root]) -> types.EmptyResult:
+        """Send a roots/set request to set the server's root directories."""
+        return await self.send_request(
+            types.ClientRequest(
+                types.SetRootsRequest(
+                    params=types.SetRootsRequestParams(roots=roots),
+                )
+            ),
+            types.EmptyResult,
+        )
+
+    async def list_roots(self) -> types.ListRootsResult:
+        """Send a roots/list request to query the server's current roots."""
+        return await self.send_request(
+            types.ClientRequest(types.ListRootsRequest()),
+            types.ListRootsResult,
+        )
 
     async def _received_request(self, responder: RequestResponder[types.ServerRequest, types.ClientResult]) -> None:
         ctx = RequestContext[ClientSession, Any](
@@ -403,12 +390,6 @@ class ClientSession(
             case types.ElicitRequest(params=params):
                 with responder:
                     response = await self._elicitation_callback(ctx, params)
-                    client_response = ClientResponse.validate_python(response)
-                    await responder.respond(client_response)
-
-            case types.ListRootsRequest():
-                with responder:
-                    response = await self._list_roots_callback(ctx)
                     client_response = ClientResponse.validate_python(response)
                     await responder.respond(client_response)
 

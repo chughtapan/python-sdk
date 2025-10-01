@@ -413,7 +413,6 @@ async def test_client_capabilities_default():
     # Assert that capabilities are properly set with defaults
     assert received_capabilities is not None
     assert received_capabilities.sampling is None  # No custom sampling callback
-    assert received_capabilities.roots is None  # No custom list_roots callback
 
 
 @pytest.mark.anyio
@@ -433,11 +432,6 @@ async def test_client_capabilities_with_custom_callbacks():
             content=types.TextContent(type="text", text="test"),
             model="test-model",
         )
-
-    async def custom_list_roots_callback(
-        context: RequestContext["ClientSession", Any],
-    ) -> types.ListRootsResult | types.ErrorData:
-        return types.ListRootsResult(roots=[])
 
     async def mock_server():
         nonlocal received_capabilities
@@ -479,7 +473,6 @@ async def test_client_capabilities_with_custom_callbacks():
             server_to_client_receive,
             client_to_server_send,
             sampling_callback=custom_sampling_callback,
-            list_roots_callback=custom_list_roots_callback,
         ) as session,
         anyio.create_task_group() as tg,
         client_to_server_send,
@@ -494,6 +487,3 @@ async def test_client_capabilities_with_custom_callbacks():
     assert received_capabilities is not None
     assert received_capabilities.sampling is not None  # Custom sampling callback provided
     assert isinstance(received_capabilities.sampling, types.SamplingCapability)
-    assert received_capabilities.roots is not None  # Custom list_roots callback provided
-    assert isinstance(received_capabilities.roots, types.RootsCapability)
-    assert received_capabilities.roots.listChanged is True  # Should be True for custom callback
