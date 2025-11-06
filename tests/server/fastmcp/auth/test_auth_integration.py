@@ -39,11 +39,13 @@ class MockOAuthProvider(OAuthAuthorizationServerProvider[AuthorizationCode, Refr
         return self.clients.get(client_id)
 
     async def register_client(self, client_info: OAuthClientInformationFull):
+        assert client_info.client_id is not None
         self.clients[client_info.client_id] = client_info
 
     async def authorize(self, client: OAuthClientInformationFull, params: AuthorizationParams) -> str:
         # toy authorize implementation which just immediately generates an authorization
         # code and completes the redirect
+        assert client.client_id is not None
         code = AuthorizationCode(
             code=f"code_{int(time.time())}",
             client_id=client.client_id,
@@ -72,6 +74,7 @@ class MockOAuthProvider(OAuthAuthorizationServerProvider[AuthorizationCode, Refr
         refresh_token = f"refresh_{secrets.token_hex(32)}"
 
         # Store the tokens
+        assert client.client_id is not None
         self.tokens[access_token] = AccessToken(
             token=access_token,
             client_id=client.client_id,
@@ -133,6 +136,7 @@ class MockOAuthProvider(OAuthAuthorizationServerProvider[AuthorizationCode, Refr
         new_refresh_token = f"refresh_{secrets.token_hex(32)}"
 
         # Store the new tokens
+        assert client.client_id is not None
         self.tokens[new_access_token] = AccessToken(
             token=new_access_token,
             client_id=client.client_id,
@@ -342,11 +346,8 @@ class TestAuthEndpoints:
     @pytest.mark.anyio
     async def test_metadata_endpoint(self, test_client: httpx.AsyncClient):
         """Test the OAuth 2.0 metadata endpoint."""
-        print("Sending request to metadata endpoint")
+
         response = await test_client.get("/.well-known/oauth-authorization-server")
-        print(f"Got response: {response.status_code}")
-        if response.status_code != 200:
-            print(f"Response content: {response.content}")
         assert response.status_code == 200
 
         metadata = response.json()
@@ -399,9 +400,7 @@ class TestAuthEndpoints:
                 "redirect_uri": "https://client.example.com/callback",
             },
         )
-        print(f"Status code: {response.status_code}")
-        print(f"Response body: {response.content}")
-        print(f"Response JSON: {response.json()}")
+
         assert response.status_code == 400
         error_response = response.json()
         assert error_response["error"] == "invalid_grant"
@@ -941,6 +940,79 @@ class TestAuthEndpoints:
         assert "error" in error_data
         assert error_data["error"] == "invalid_client_metadata"
         assert error_data["error_description"] == "grant_types must be authorization_code and refresh_token"
+
+    @pytest.mark.anyio
+    async def test_client_registration_with_additional_grant_type(self, test_client: httpx.AsyncClient):
+        client_metadata = {
+            "redirect_uris": ["https://client.example.com/callback"],
+            "client_name": "Test Client",
+            "grant_types": ["authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:device_code"],
+        }
+
+        response = await test_client.post("/register", json=client_metadata)
+        assert response.status_code == 201
+        client_info = response.json()
+
+        # Verify client was registered successfully
+        assert "client_id" in client_info
+        assert "client_secret" in client_info
+        assert client_info["client_name"] == "Test Client"
+
+    @pytest.mark.anyio
+    async def test_client_registration_with_additional_response_types(
+        self, test_client: httpx.AsyncClient, mock_oauth_provider: MockOAuthProvider
+    ):
+        """Test that registration accepts additional response_types values alongside 'code'."""
+        client_metadata = {
+            "redirect_uris": ["https://client.example.com/callback"],
+            "client_name": "Test Client",
+            "grant_types": ["authorization_code", "refresh_token"],
+            "response_types": ["code", "none"],  # Keycloak-style response with additional value
+        }
+
+        response = await test_client.post("/register", json=client_metadata)
+        assert response.status_code == 201
+        data = response.json()
+
+        client = await mock_oauth_provider.get_client(data["client_id"])
+        assert client is not None
+        assert "code" in client.response_types
+
+    @pytest.mark.anyio
+    async def test_client_registration_response_types_without_code(self, test_client: httpx.AsyncClient):
+        """Test that registration rejects response_types that don't include 'code'."""
+        client_metadata = {
+            "redirect_uris": ["https://client.example.com/callback"],
+            "client_name": "Test Client",
+            "grant_types": ["authorization_code", "refresh_token"],
+            "response_types": ["token", "none", "nonsense-string"],
+        }
+
+        response = await test_client.post("/register", json=client_metadata)
+        assert response.status_code == 400
+        error_data = response.json()
+        assert "error" in error_data
+        assert error_data["error"] == "invalid_client_metadata"
+        assert "response_types must include 'code'" in error_data["error_description"]
+
+    @pytest.mark.anyio
+    async def test_client_registration_default_response_types(
+        self, test_client: httpx.AsyncClient, mock_oauth_provider: MockOAuthProvider
+    ):
+        """Test that registration uses default response_types of ['code'] when not specified."""
+        client_metadata = {
+            "redirect_uris": ["https://client.example.com/callback"],
+            "client_name": "Test Client",
+            "grant_types": ["authorization_code", "refresh_token"],
+            # response_types not specified, should default to ["code"]
+        }
+
+        response = await test_client.post("/register", json=client_metadata)
+        assert response.status_code == 201
+        data = response.json()
+
+        assert "response_types" in data
+        assert data["response_types"] == ["code"]
 
 
 class TestAuthorizeEndpointErrors:

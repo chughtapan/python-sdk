@@ -13,7 +13,7 @@ import string
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Any, Protocol
 from urllib.parse import urlencode, urljoin, urlparse
 
 import anyio
@@ -88,8 +88,8 @@ class OAuthContext:
     server_url: str
     client_metadata: OAuthClientMetadata
     storage: TokenStorage
-    redirect_handler: Callable[[str], Awaitable[None]]
-    callback_handler: Callable[[], Awaitable[tuple[str, str | None]]]
+    redirect_handler: Callable[[str], Awaitable[None]] | None
+    callback_handler: Callable[[], Awaitable[tuple[str, str | None]]] | None
     timeout: float = 300.0
 
     # Discovered metadata
@@ -107,10 +107,6 @@ class OAuthContext:
 
     # State
     lock: anyio.Lock = field(default_factory=anyio.Lock)
-
-    # Discovery state for fallback support
-    discovery_base_url: str | None = None
-    discovery_pathname: str | None = None
 
     def get_authorization_base_url(self, server_url: str) -> str:
         """Extract base URL by removing path component."""
@@ -189,8 +185,8 @@ class OAuthClientProvider(httpx.Auth):
         server_url: str,
         client_metadata: OAuthClientMetadata,
         storage: TokenStorage,
-        redirect_handler: Callable[[str], Awaitable[None]],
-        callback_handler: Callable[[], Awaitable[tuple[str, str | None]]],
+        redirect_handler: Callable[[str], Awaitable[None]] | None = None,
+        callback_handler: Callable[[], Awaitable[tuple[str, str | None]]] | None = None,
         timeout: float = 300.0,
     ):
         """Initialize OAuth2 authentication."""
@@ -204,6 +200,64 @@ class OAuthClientProvider(httpx.Auth):
         )
         self._initialized = False
 
+    def _build_protected_resource_discovery_urls(self, init_response: httpx.Response) -> list[str]:
+        """
+        Build ordered list of URLs to try for protected resource metadata discovery.
+
+        Per SEP-985, the client MUST:
+        1. Try resource_metadata from WWW-Authenticate header (if present)
+        2. Fall back to path-based well-known URI: /.well-known/oauth-protected-resource/{path}
+        3. Fall back to root-based well-known URI: /.well-known/oauth-protected-resource
+
+        Args:
+            init_response: The initial 401 response from the server
+
+        Returns:
+            Ordered list of URLs to try for discovery
+        """
+        urls: list[str] = []
+
+        # Priority 1: WWW-Authenticate header with resource_metadata parameter
+        www_auth_url = self._extract_resource_metadata_from_www_auth(init_response)
+        if www_auth_url:
+            urls.append(www_auth_url)
+
+        # Priority 2-3: Well-known URIs (RFC 9728)
+        parsed = urlparse(self.context.server_url)
+        base_url = f"{parsed.scheme}://{parsed.netloc}"
+
+        # Priority 2: Path-based well-known URI (if server has a path component)
+        if parsed.path and parsed.path != "/":
+            path_based_url = urljoin(base_url, f"/.well-known/oauth-protected-resource{parsed.path}")
+            urls.append(path_based_url)
+
+        # Priority 3: Root-based well-known URI
+        root_based_url = urljoin(base_url, "/.well-known/oauth-protected-resource")
+        urls.append(root_based_url)
+
+        return urls
+
+    def _extract_field_from_www_auth(self, init_response: httpx.Response, field_name: str) -> str | None:
+        """
+        Extract field from WWW-Authenticate header.
+
+        Returns:
+            Field value if found in WWW-Authenticate header, None otherwise
+        """
+        www_auth_header = init_response.headers.get("WWW-Authenticate")
+        if not www_auth_header:
+            return None
+
+        # Pattern matches: field_name="value" or field_name=value (unquoted)
+        pattern = rf'{field_name}=(?:"([^"]+)"|([^\s,]+))'
+        match = re.search(pattern, www_auth_header)
+
+        if match:
+            # Return quoted value if present, otherwise unquoted value
+            return match.group(1) or match.group(2)
+
+        return None
+
     def _extract_resource_metadata_from_www_auth(self, init_response: httpx.Response) -> str | None:
         """
         Extract protected resource metadata URL from WWW-Authenticate header as per RFC9728.
@@ -214,33 +268,26 @@ class OAuthClientProvider(httpx.Auth):
         if not init_response or init_response.status_code != 401:
             return None
 
-        www_auth_header = init_response.headers.get("WWW-Authenticate")
-        if not www_auth_header:
-            return None
+        return self._extract_field_from_www_auth(init_response, "resource_metadata")
 
-        # Pattern matches: resource_metadata="url" or resource_metadata=url (unquoted)
-        pattern = r'resource_metadata=(?:"([^"]+)"|([^\s,]+))'
-        match = re.search(pattern, www_auth_header)
+    def _extract_scope_from_www_auth(self, init_response: httpx.Response) -> str | None:
+        """
+        Extract scope parameter from WWW-Authenticate header as per RFC6750.
 
-        if match:
-            # Return quoted value if present, otherwise unquoted value
-            return match.group(1) or match.group(2)
+        Returns:
+            Scope string if found in WWW-Authenticate header, None otherwise
+        """
+        return self._extract_field_from_www_auth(init_response, "scope")
 
-        return None
+    async def _handle_protected_resource_response(self, response: httpx.Response) -> bool:
+        """
+        Handle protected resource metadata discovery response.
 
-    async def _discover_protected_resource(self, init_response: httpx.Response) -> httpx.Request:
-        # RFC9728: Try to extract resource_metadata URL from WWW-Authenticate header of the initial response
-        url = self._extract_resource_metadata_from_www_auth(init_response)
+        Per SEP-985, supports fallback when discovery fails at one URL.
 
-        if not url:
-            # Fallback to well-known discovery
-            auth_base_url = self.context.get_authorization_base_url(self.context.server_url)
-            url = urljoin(auth_base_url, "/.well-known/oauth-protected-resource")
-
-        return httpx.Request("GET", url, headers={MCP_PROTOCOL_VERSION: LATEST_PROTOCOL_VERSION})
-
-    async def _handle_protected_resource_response(self, response: httpx.Response) -> None:
-        """Handle discovery response."""
+        Returns:
+            True if metadata was successfully discovered, False if we should try next URL
+        """
         if response.status_code == 200:
             try:
                 content = await response.aread()
@@ -248,8 +295,40 @@ class OAuthClientProvider(httpx.Auth):
                 self.context.protected_resource_metadata = metadata
                 if metadata.authorization_servers:
                     self.context.auth_server_url = str(metadata.authorization_servers[0])
+                return True
+
             except ValidationError:
-                pass
+                # Invalid metadata - try next URL
+                logger.warning(f"Invalid protected resource metadata at {response.request.url}")
+                return False
+        elif response.status_code == 404:
+            # Not found - try next URL in fallback chain
+            logger.debug(f"Protected resource metadata not found at {response.request.url}, trying next URL")
+            return False
+        else:
+            # Other error - fail immediately
+            raise OAuthFlowError(f"Protected Resource Metadata request failed: {response.status_code}")
+
+    def _select_scopes(self, init_response: httpx.Response) -> None:
+        """Select scopes as outlined in the 'Scope Selection Strategy in the MCP spec."""
+        # Per MCP spec, scope selection priority order:
+        # 1. Use scope from WWW-Authenticate header (if provided)
+        # 2. Use all scopes from PRM scopes_supported (if available)
+        # 3. Omit scope parameter if neither is available
+        #
+        www_authenticate_scope = self._extract_scope_from_www_auth(init_response)
+        if www_authenticate_scope is not None:
+            # Priority 1: WWW-Authenticate header scope
+            self.context.client_metadata.scope = www_authenticate_scope
+        elif (
+            self.context.protected_resource_metadata is not None
+            and self.context.protected_resource_metadata.scopes_supported is not None
+        ):
+            # Priority 2: PRM scopes_supported
+            self.context.client_metadata.scope = " ".join(self.context.protected_resource_metadata.scopes_supported)
+        else:
+            # Priority 3: Omit scope parameter
+            self.context.client_metadata.scope = None
 
     def _get_discovery_urls(self) -> list[str]:
         """Generate ordered list of (url, type) tuples for discovery attempts."""
@@ -309,8 +388,21 @@ class OAuthClientProvider(httpx.Auth):
         except ValidationError as e:
             raise OAuthRegistrationError(f"Invalid registration response: {e}")
 
-    async def _perform_authorization(self) -> tuple[str, str]:
+    async def _perform_authorization(self) -> httpx.Request:
+        """Perform the authorization flow."""
+        auth_code, code_verifier = await self._perform_authorization_code_grant()
+        token_request = await self._exchange_token_authorization_code(auth_code, code_verifier)
+        return token_request
+
+    async def _perform_authorization_code_grant(self) -> tuple[str, str]:
         """Perform the authorization redirect and get auth code."""
+        if self.context.client_metadata.redirect_uris is None:
+            raise OAuthFlowError("No redirect URIs provided for authorization code grant")
+        if not self.context.redirect_handler:
+            raise OAuthFlowError("No redirect handler provided for authorization code grant")
+        if not self.context.callback_handler:
+            raise OAuthFlowError("No callback handler provided for authorization code grant")
+
         if self.context.oauth_metadata and self.context.oauth_metadata.authorization_endpoint:
             auth_endpoint = str(self.context.oauth_metadata.authorization_endpoint)
         else:
@@ -355,24 +447,34 @@ class OAuthClientProvider(httpx.Auth):
         # Return auth code and code verifier for token exchange
         return auth_code, pkce_params.code_verifier
 
-    async def _exchange_token(self, auth_code: str, code_verifier: str) -> httpx.Request:
-        """Build token exchange request."""
-        if not self.context.client_info:
-            raise OAuthFlowError("Missing client info")
-
+    def _get_token_endpoint(self) -> str:
         if self.context.oauth_metadata and self.context.oauth_metadata.token_endpoint:
             token_url = str(self.context.oauth_metadata.token_endpoint)
         else:
             auth_base_url = self.context.get_authorization_base_url(self.context.server_url)
             token_url = urljoin(auth_base_url, "/token")
+        return token_url
 
-        token_data = {
-            "grant_type": "authorization_code",
-            "code": auth_code,
-            "redirect_uri": str(self.context.client_metadata.redirect_uris[0]),
-            "client_id": self.context.client_info.client_id,
-            "code_verifier": code_verifier,
-        }
+    async def _exchange_token_authorization_code(
+        self, auth_code: str, code_verifier: str, *, token_data: dict[str, Any] | None = {}
+    ) -> httpx.Request:
+        """Build token exchange request for authorization_code flow."""
+        if self.context.client_metadata.redirect_uris is None:
+            raise OAuthFlowError("No redirect URIs provided for authorization code grant")
+        if not self.context.client_info:
+            raise OAuthFlowError("Missing client info")
+
+        token_url = self._get_token_endpoint()
+        token_data = token_data or {}
+        token_data.update(
+            {
+                "grant_type": "authorization_code",
+                "code": auth_code,
+                "redirect_uri": str(self.context.client_metadata.redirect_uris[0]),
+                "client_id": self.context.client_info.client_id,
+                "code_verifier": code_verifier,
+            }
+        )
 
         # Only include resource param if conditions are met
         if self.context.should_include_resource_param(self.context.protocol_version):
@@ -388,7 +490,9 @@ class OAuthClientProvider(httpx.Auth):
     async def _handle_token_response(self, response: httpx.Response) -> None:
         """Handle token exchange response."""
         if response.status_code != 200:
-            raise OAuthTokenError(f"Token exchange failed: {response.status_code}")
+            body = await response.aread()
+            body = body.decode("utf-8")
+            raise OAuthTokenError(f"Token exchange failed ({response.status_code}): {body}")
 
         try:
             content = await response.aread()
@@ -478,9 +582,6 @@ class OAuthClientProvider(httpx.Auth):
         content = await response.aread()
         metadata = OAuthMetadata.model_validate_json(content)
         self.context.oauth_metadata = metadata
-        # Apply default scope if needed
-        if self.context.client_metadata.scope is None and metadata.scopes_supported is not None:
-            self.context.client_metadata.scope = " ".join(metadata.scopes_supported)
 
     async def async_auth_flow(self, request: httpx.Request) -> AsyncGenerator[httpx.Request, httpx.Response]:
         """HTTPX auth flow integration."""
@@ -509,12 +610,25 @@ class OAuthClientProvider(httpx.Auth):
                 # Perform full OAuth flow
                 try:
                     # OAuth flow must be inline due to generator constraints
-                    # Step 1: Discover protected resource metadata (RFC9728 with WWW-Authenticate support)
-                    discovery_request = await self._discover_protected_resource(response)
-                    discovery_response = yield discovery_request
-                    await self._handle_protected_resource_response(discovery_response)
+                    # Step 1: Discover protected resource metadata (SEP-985 with fallback support)
+                    discovery_urls = self._build_protected_resource_discovery_urls(response)
+                    discovery_success = False
+                    for url in discovery_urls:
+                        discovery_request = httpx.Request(
+                            "GET", url, headers={MCP_PROTOCOL_VERSION: LATEST_PROTOCOL_VERSION}
+                        )
+                        discovery_response = yield discovery_request
+                        discovery_success = await self._handle_protected_resource_response(discovery_response)
+                        if discovery_success:
+                            break
 
-                    # Step 2: Discover OAuth metadata (with fallback for legacy servers)
+                    if not discovery_success:
+                        raise OAuthFlowError("Protected resource metadata discovery failed: no valid metadata found")
+
+                    # Step 2: Apply scope selection strategy
+                    self._select_scopes(response)
+
+                    # Step 3: Discover OAuth metadata (with fallback for legacy servers)
                     discovery_urls = self._get_discovery_urls()
                     for url in discovery_urls:
                         oauth_metadata_request = self._create_oauth_metadata_request(url)
@@ -529,22 +643,38 @@ class OAuthClientProvider(httpx.Auth):
                         elif oauth_metadata_response.status_code < 400 or oauth_metadata_response.status_code >= 500:
                             break  # Non-4XX error, stop trying
 
-                    # Step 3: Register client if needed
+                    # Step 4: Register client if needed
                     registration_request = await self._register_client()
                     if registration_request:
                         registration_response = yield registration_request
                         await self._handle_registration_response(registration_response)
 
-                    # Step 4: Perform authorization
-                    auth_code, code_verifier = await self._perform_authorization()
-
-                    # Step 5: Exchange authorization code for tokens
-                    token_request = await self._exchange_token(auth_code, code_verifier)
-                    token_response = yield token_request
+                    # Step 5: Perform authorization and complete token exchange
+                    token_response = yield await self._perform_authorization()
                     await self._handle_token_response(token_response)
                 except Exception:
                     logger.exception("OAuth flow error")
                     raise
+
+                # Retry with new tokens
+                self._add_auth_header(request)
+                yield request
+            elif response.status_code == 403:
+                # Step 1: Extract error field from WWW-Authenticate header
+                error = self._extract_field_from_www_auth(response, "error")
+
+                # Step 2: Check if we need to step-up authorization
+                if error == "insufficient_scope":
+                    try:
+                        # Step 2a: Update the required scopes
+                        self._select_scopes(response)
+
+                        # Step 2b: Perform (re-)authorization and token exchange
+                        token_response = yield await self._perform_authorization()
+                        await self._handle_token_response(token_response)
+                    except Exception:
+                        logger.exception("OAuth flow error")
+                        raise
 
                 # Retry with new tokens
                 self._add_auth_header(request)
