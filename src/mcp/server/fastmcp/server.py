@@ -28,6 +28,7 @@ from mcp.server.auth.settings import AuthSettings
 from mcp.server.elicitation import ElicitationResult, ElicitSchemaModelT, UrlElicitationResult, elicit_with_validation
 from mcp.server.elicitation import elicit_url as _elicit_url
 from mcp.server.fastmcp.exceptions import ResourceError
+from mcp.server.fastmcp.groups import Group, GroupManager
 from mcp.server.fastmcp.prompts import Prompt, PromptManager
 from mcp.server.fastmcp.resources import FunctionResource, Resource, ResourceManager
 from mcp.server.fastmcp.tools import Tool, ToolManager
@@ -45,6 +46,7 @@ from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.shared.context import LifespanContextT, RequestContext, RequestT
 from mcp.types import Annotations, AnyFunction, ContentBlock, GetPromptResult, Icon, ToolAnnotations
+from mcp.types import Group as MCPGroup
 from mcp.types import Prompt as MCPPrompt
 from mcp.types import PromptArgument as MCPPromptArgument
 from mcp.types import Resource as MCPResource
@@ -93,6 +95,9 @@ class Settings(BaseSettings, Generic[LifespanResultT]):
 
     # prompt settings
     warn_on_duplicate_prompts: bool
+
+    # group settings
+    warn_on_duplicate_groups: bool
 
     lifespan: Callable[[FastMCP[LifespanResultT]], AbstractAsyncContextManager[LifespanResultT]] | None
     """A async context manager that will be called when the server is started."""
@@ -145,6 +150,7 @@ class FastMCP(Generic[LifespanResultT]):
         warn_on_duplicate_resources: bool = True,
         warn_on_duplicate_tools: bool = True,
         warn_on_duplicate_prompts: bool = True,
+        warn_on_duplicate_groups: bool = True,
         lifespan: (Callable[[FastMCP[LifespanResultT]], AbstractAsyncContextManager[LifespanResultT]] | None) = None,
         auth: AuthSettings | None = None,
         transport_security: TransportSecuritySettings | None = None,
@@ -170,6 +176,7 @@ class FastMCP(Generic[LifespanResultT]):
             warn_on_duplicate_resources=warn_on_duplicate_resources,
             warn_on_duplicate_tools=warn_on_duplicate_tools,
             warn_on_duplicate_prompts=warn_on_duplicate_prompts,
+            warn_on_duplicate_groups=warn_on_duplicate_groups,
             lifespan=lifespan,
             auth=auth,
             transport_security=transport_security,
@@ -190,6 +197,7 @@ class FastMCP(Generic[LifespanResultT]):
         self._tool_manager = ToolManager(tools=tools, warn_on_duplicate_tools=self.settings.warn_on_duplicate_tools)
         self._resource_manager = ResourceManager(warn_on_duplicate_resources=self.settings.warn_on_duplicate_resources)
         self._prompt_manager = PromptManager(warn_on_duplicate_prompts=self.settings.warn_on_duplicate_prompts)
+        self._group_manager = GroupManager(warn_on_duplicate_groups=self.settings.warn_on_duplicate_groups)
         # Validate auth configuration
         if self.settings.auth is not None:
             if auth_server_provider and token_verifier:  # pragma: no cover
@@ -296,6 +304,7 @@ class FastMCP(Generic[LifespanResultT]):
         self._mcp_server.list_prompts()(self.list_prompts)
         self._mcp_server.get_prompt()(self.get_prompt)
         self._mcp_server.list_resource_templates()(self.list_resource_templates)
+        self._mcp_server.list_groups()(self.list_groups)
 
     async def list_tools(self) -> list[MCPTool]:
         """List all available tools."""
@@ -1018,6 +1027,62 @@ class FastMCP(Generic[LifespanResultT]):
         except Exception as e:
             logger.exception(f"Error getting prompt {name}")
             raise ValueError(str(e))
+
+    async def list_groups(self) -> list[MCPGroup]:
+        """List all available groups."""
+        groups = self._group_manager.list_groups()
+        return [
+            MCPGroup(
+                name=g.name,
+                title=g.title,
+                description=g.description,
+                icons=g.icons,
+                annotations=g.annotations,
+                _meta=g.meta,
+            )
+            for g in groups
+        ]
+
+    def add_group(
+        self,
+        name: str,
+        *,
+        title: str | None = None,
+        description: str | None = None,
+        icons: list[Icon] | None = None,
+        annotations: Annotations | None = None,
+        meta: dict[str, Any] | None = None,
+    ) -> Group:
+        """Add a group to the server.
+
+        Args:
+            name: Programmatic name of the group
+            title: Human-readable title for the group
+            description: Description of what the group represents
+            icons: Optional list of icons for the group
+            annotations: Optional annotations
+            meta: Optional metadata (can include group membership for nesting)
+
+        Returns:
+            The created Group
+        """
+        group = Group(
+            name=name,
+            title=title,
+            description=description,
+            icons=icons,
+            annotations=annotations,
+            meta=meta,
+        )
+        return self._group_manager.add_group(group)
+
+    def remove_group(self, name: str) -> None:
+        """Remove a group from the server by name.
+
+        Args:
+            name: The name of the group to remove
+        """
+        self._group_manager.remove_group(name)
 
 
 class StreamableHTTPASGIApp:

@@ -422,6 +422,17 @@ class ClientSession(
 
         return result
 
+    async def list_groups(self, *, params: types.PaginatedRequestParams | None = None) -> types.ListGroupsResult:
+        """Send a groups/list request.
+
+        Args:
+            params: Full pagination parameters including cursor and any future fields
+        """
+        return await self.send_request(
+            types.ClientRequest(types.ListGroupsRequest(params=params)),
+            types.ListGroupsResult,
+        )
+
     async def send_roots_list_changed(self) -> None:  # pragma: no cover
         """Send a roots/list_changed notification."""
         await self.send_notification(types.ClientNotification(types.RootsListChangedNotification()))

@@ -501,6 +501,10 @@ class ServerSession(
         """Send a prompt list changed notification."""
         await self.send_notification(types.ServerNotification(types.PromptListChangedNotification()))
 
+    async def send_group_list_changed(self) -> None:  # pragma: no cover
+        """Send a group list changed notification."""
+        await self.send_notification(types.ServerNotification(types.GroupListChangedNotification()))
+
     async def send_elicit_complete(
         self,
         elicitation_id: str,
