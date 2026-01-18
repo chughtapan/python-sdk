@@ -291,6 +291,17 @@ class Client:
         """List available tools from the server."""
         return await self.session.list_tools(params=params)
 
+    async def list_groups(
+        self,
+        params: types.PaginatedRequestParams | None = None,
+    ) -> types.ListGroupsResult:
+        """List available groups from the server."""
+        return await self.session.list_groups(params=params)
+
+    def get_server_capabilities(self) -> types.ServerCapabilities | None:
+        """Get the server capabilities received during initialization."""
+        return self.session.get_server_capabilities()
+
     async def send_roots_list_changed(self) -> None:
         """Send a notification that the roots list has changed."""
         await self.session.send_roots_list_changed()
