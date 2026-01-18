@@ -114,10 +114,12 @@ class NotificationOptions:
         prompts_changed: bool = False,
         resources_changed: bool = False,
         tools_changed: bool = False,
+        groups_changed: bool = False,
     ):
         self.prompts_changed = prompts_changed
         self.resources_changed = resources_changed
         self.tools_changed = tools_changed
+        self.groups_changed = groups_changed
 
 
 @asynccontextmanager
@@ -202,6 +204,7 @@ class Server(Generic[LifespanResultT, RequestT]):
         prompts_capability = None
         resources_capability = None
         tools_capability = None
+        groups_capability = None
         logging_capability = None
         completions_capability = None
 
@@ -219,6 +222,10 @@ class Server(Generic[LifespanResultT, RequestT]):
         if types.ListToolsRequest in self.request_handlers:
             tools_capability = types.ToolsCapability(list_changed=notification_options.tools_changed)
 
+        # Set groups capabilities if handler exists
+        if types.ListGroupsRequest in self.request_handlers:
+            groups_capability = types.GroupsCapability(list_changed=notification_options.groups_changed)
+
         # Set logging capabilities if handler exists
         if types.SetLevelRequest in self.request_handlers:  # pragma: no cover
             logging_capability = types.LoggingCapability()
@@ -231,6 +238,7 @@ class Server(Generic[LifespanResultT, RequestT]):
             prompts=prompts_capability,
             resources=resources_capability,
             tools=tools_capability,
+            groups=groups_capability,
             logging=logging_capability,
             experimental=experimental_capabilities,
             completions=completions_capability,
@@ -463,6 +471,30 @@ class Server(Generic[LifespanResultT, RequestT]):
                     return types.ServerResult(types.ListToolsResult(tools=result))
 
             self.request_handlers[types.ListToolsRequest] = handler
+            return func
+
+        return decorator
+
+    def list_groups(self):
+        def decorator(
+            func: Callable[[], Awaitable[list[types.Group]]]
+            | Callable[[types.ListGroupsRequest], Awaitable[types.ListGroupsResult]],
+        ):
+            logger.debug("Registering handler for ListGroupsRequest")
+
+            wrapper = create_call_wrapper(func, types.ListGroupsRequest)
+
+            async def handler(req: types.ListGroupsRequest):
+                result = await wrapper(req)
+
+                # Handle both old style (list[Group]) and new style (ListGroupsResult)
+                if isinstance(result, types.ListGroupsResult):
+                    return types.ServerResult(result)
+                else:
+                    # Old style returns list[Group]
+                    return types.ServerResult(types.ListGroupsResult(groups=result))
+
+            self.request_handlers[types.ListGroupsRequest] = handler
             return func
 
         return decorator

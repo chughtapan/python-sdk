@@ -28,6 +28,9 @@ TASK_FORBIDDEN: Final[Literal["forbidden"]] = "forbidden"
 TASK_OPTIONAL: Final[Literal["optional"]] = "optional"
 TASK_REQUIRED: Final[Literal["required"]] = "required"
 
+GROUPS_META_KEY: Final = "io.modelcontextprotocol/groups"
+"""Reserved _meta key for group membership. Value should be a list of group names."""
+
 
 class MCPModel(BaseModel):
     """Base class for all MCP protocol types. Allows extra fields for forward compatibility."""
@@ -402,6 +405,13 @@ class ToolsCapability(MCPModel):
     """Whether this server supports notifications for changes to the tool list."""
 
 
+class GroupsCapability(MCPModel):
+    """Capability for groups operations."""
+
+    list_changed: bool | None = None
+    """Whether this server supports notifications for changes to the group list."""
+
+
 class LoggingCapability(MCPModel):
     """Capability for logging operations."""
 
@@ -447,6 +457,8 @@ class ServerCapabilities(MCPModel):
     """Present if the server offers any resources to read."""
     tools: ToolsCapability | None = None
     """Present if the server offers any tools to call."""
+    groups: GroupsCapability | None = None
+    """Present if the server offers any groups."""
     completions: CompletionsCapability | None = None
     """Present if the server offers autocompletion suggestions for prompts and resources."""
     tasks: ServerTasksCapability | None = None
@@ -1252,6 +1264,44 @@ class ToolListChangedNotification(Notification[NotificationParams | None, Litera
     params: NotificationParams | None = None
 
 
+class Group(BaseMetadata):
+    """A named collection of MCP primitives that enables client-side filtering and organization."""
+
+    description: str | None = None
+    """A description of what this group represents."""
+    icons: list[Icon] | None = None
+    """An optional list of icons for this group."""
+    annotations: Annotations | None = None
+    meta: dict[str, Any] | None = Field(alias="_meta", default=None)
+    """
+    See [MCP specification](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/47339c03c143bb4ec01a26e721a1b8fe66634ebe/docs/specification/draft/basic/index.mdx#general-fields)
+    for notes on _meta usage.
+    """
+
+
+class ListGroupsRequest(PaginatedRequest[Literal["groups/list"]]):
+    """Sent from the client to request a list of groups the server has."""
+
+    method: Literal["groups/list"] = "groups/list"
+
+
+class ListGroupsResult(PaginatedResult):
+    """The server's response to a groups/list request from the client."""
+
+    groups: list[Group]
+
+
+class GroupListChangedNotification(
+    Notification[NotificationParams | None, Literal["notifications/groups/list_changed"]]
+):
+    """An optional notification from the server to the client, informing it that the list
+    of groups it offers has changed.
+    """
+
+    method: Literal["notifications/groups/list_changed"] = "notifications/groups/list_changed"
+    params: NotificationParams | None = None
+
+
 LoggingLevel = Literal["debug", "info", "notice", "warning", "error", "critical", "alert", "emergency"]
 
 
@@ -1645,6 +1695,7 @@ ClientRequestType: TypeAlias = (
     | UnsubscribeRequest
     | CallToolRequest
     | ListToolsRequest
+    | ListGroupsRequest
     | GetTaskRequest
     | GetTaskPayloadRequest
     | ListTasksRequest
@@ -1801,6 +1852,7 @@ ServerNotificationType: TypeAlias = (
     | ResourceUpdatedNotification
     | ResourceListChangedNotification
     | ToolListChangedNotification
+    | GroupListChangedNotification
     | PromptListChangedNotification
     | ElicitCompleteNotification
     | TaskStatusNotification
@@ -1822,6 +1874,7 @@ ServerResultType: TypeAlias = (
     | ReadResourceResult
     | CallToolResult
     | ListToolsResult
+    | ListGroupsResult
     | GetTaskResult
     | GetTaskPayloadResult
     | ListTasksResult
